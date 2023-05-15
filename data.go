@@ -22,6 +22,7 @@ type Index struct {
 	StartTime int64 // 8
 	EndTime   int64 // 8
 	Offset    int64 // 8
+	Length    int64 // 8 如果压缩则是原始大小
 	Flag      byte  // 1
 }
 
@@ -42,6 +43,10 @@ func (i *Index) Read(indexBuf io.Reader) error {
 	if err != nil {
 		return err
 	}
+	err = binary.Read(indexBuf, binary.BigEndian, &i.Length)
+	if err != nil {
+		return err
+	}
 	err = binary.Read(indexBuf, binary.BigEndian, &i.Flag)
 	if err != nil {
 		return err
@@ -53,5 +58,6 @@ func (i Index) Write(indexBuf io.Writer) {
 	binary.Write(indexBuf, binary.BigEndian, i.StartTime)
 	binary.Write(indexBuf, binary.BigEndian, i.EndTime)
 	binary.Write(indexBuf, binary.BigEndian, i.Offset)
+	binary.Write(indexBuf, binary.BigEndian, i.Length)
 	binary.Write(indexBuf, binary.BigEndian, i.Flag)
 }

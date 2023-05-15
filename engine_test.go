@@ -169,3 +169,65 @@ func TestEngine_GenJson(t *testing.T) {
 	fmt.Println("json:", len(marshal), "binary:", len(v)*10, "protobuf:")
 
 }
+
+func TestLz4Write(t *testing.T) {
+	engine := New()
+	engine.Init()
+	points := make(chan *Point, 1e4)
+	go engine.dump(-1, points, &DumpOptional{Zip: true})
+	for i := 0; i < 100; i++ { // 100个设备
+		for k := 0; k < 1000; k++ { // 1000条数据
+			var v []int64
+			for j := 0; j < 10; j++ { // 10个寄存器
+				v = append(v, int64(i))
+			}
+			points <- &Point{
+				Data:      v,
+				DeviceId:  DeviceId(i),
+				Timestamp: int64(k),
+			}
+		}
+
+	}
+	close(points)
+	fmt.Println("write ok...")
+	time.Sleep(time.Second * 10)
+}
+
+func TestLz4WriteNoLz4(t *testing.T) {
+	engine := New()
+	engine.Init()
+	points := make(chan *Point, 1e4)
+	go engine.dump(-1, points, &DumpOptional{Zip: false})
+	for i := 0; i < 100; i++ { // 100个设备
+		for k := 0; k < 1000; k++ { // 1000条数据
+			var v []int64
+			for j := 0; j < 10; j++ { // 10个寄存器
+				v = append(v, int64(i))
+			}
+			point := Point{
+				Data:      v,
+				DeviceId:  DeviceId(i),
+				Timestamp: int64(k),
+			}
+			points <- &point
+		}
+
+	}
+	close(points)
+	fmt.Println("write ok...")
+	time.Sleep(time.Second * 10)
+}
+
+func TestRead(t *testing.T) {
+	engine := New()
+	engine.Init()
+
+	pipeline := engine.openIndexPipeline(CompactFiles{
+		key:  "604800000000000_-1_1684168368974",
+		path: "/home/wyatt/code/tmp/data/value/604800000000000/-1/604800000000000_-1_1684168368974",
+		size: 0,
+	})
+	for _ = range pipeline {
+	}
+}

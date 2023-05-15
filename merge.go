@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/go-mmap/mmap"
+	"github.com/pierrec/lz4"
 	"os"
 	"sort"
 	"strconv"
@@ -38,46 +39,65 @@ func (e *Engine) openIndexPipeline(files CompactFiles) chan *MergePoint {
 		var indexLength int64
 		binary.Read(bytes.NewReader(indexLengthBuf), binary.BigEndian, &indexLength)
 
-		// read index
+		// read all index
 		indexBuf := make([]byte, indexLength)
 		file.ReadAt(indexBuf, int64(file.Len())-8-indexLength)
 		reader := bufio.NewReader(bytes.NewReader(indexBuf))
+
+		// read all index
+		// TODO: chang to binray search
+		var indexs []*Index
 		for {
-			// read index
 			index := Index{}
 			err = index.Read(reader)
 			if err != nil {
 				break
 			}
+			indexs = append(indexs, &index)
+			fmt.Println(index)
+		}
 
-			// peek right
-			var r int64
-			peek, err := reader.Peek(IndexSize)
-			if err != nil {
-				r = int64(file.Len()) - 8 - indexLength
-			} else {
-				index := Index{}
-				index.Read(bytes.NewReader(peek))
-				r = index.Offset
+		fmt.Println("indexs:", len(indexs))
+
+		dataSize := int64(file.Len()) - 8 - indexLength
+		for i := 0; i < len(indexs); i++ {
+			l := indexs[i].Offset
+			r := dataSize
+			if i != len(indexs)-1 {
+				r = indexs[i+1].Offset
 			}
-			fmt.Printf("%#v\n", index)
-			//fmt.Println(index.Offset, r)
+
+			index := indexs[i]
+
 			// read key
-			keyBuffer, err := e.keyDiskv.Read(strconv.Itoa(int(index.DeviceId)))
-			if err != nil {
-				panic(err)
+			//keyBuffer, err := e.keyDiskv.Read(strconv.Itoa(int(index.DeviceId)))
+			//if err != nil {
+			//	panic(err)
+			//}
+			fmt.Println("l", l, "r", r)
+
+			valueCount := 10
+			pointSize := int64(8 + valueCount*8)
+
+			buf := make([]byte, r-l)
+			file.ReadAt(buf, index.Offset)
+			if index.Flag&1 > 0 {
+				target := make([]byte, index.Length+10)
+				_, err := lz4.NewReader(bytes.NewReader(buf)).Read(target)
+				if err != nil {
+					panic(err)
+				}
+				buf = target
+			} else {
+				file.ReadAt(buf, index.Offset)
 			}
 
-			// read data
-			buf := make([]byte, 8+len(keyBuffer))
-
-			for i := index.Offset; i < r; i += int64(8 + len(keyBuffer)) {
-				file.ReadAt(buf, i)
-				r := bytes.NewReader(buf)
+			for i := 0; i < int(index.Length/pointSize); i++ {
+				r := bytes.NewReader(buf[i*int(pointSize) : (i+1)*int(pointSize)])
 				var timestamp, value int64
 				var values Data
 				binary.Read(r, binary.BigEndian, &timestamp)
-				for i := 0; i < len(keyBuffer)/8; i++ {
+				for i := 0; i < valueCount; i++ {
 					binary.Read(r, binary.BigEndian, &value)
 					values = append(values, value)
 				}
@@ -89,6 +109,7 @@ func (e *Engine) openIndexPipeline(files CompactFiles) chan *MergePoint {
 					},
 					Created: int64(created),
 				}
+				fmt.Println(v.DeviceId, v.Timestamp, v.Data)
 				indexChan <- v
 			}
 
@@ -168,17 +189,36 @@ func (e *Engine) compact() {
 			if len(files) <= 5 {
 				continue
 			}
+
+			size := int64(0)
+			for _, i := range files {
+				size += i.size
+			}
+
 			atoi, err := strconv.Atoi(shardId)
 			if err != nil {
 				panic(err)
 			}
-			e.merge(int64(atoi), files)
+
+			op := DumpOptional{}
+			if size > 100*1e6 {
+				op.Zip = true
+			}
+
+			fmt.Println(time.Now(), "start compact", files)
+			e.merge(int64(atoi), files, &op)
+			fmt.Println(time.Now(), "end compact", files)
+
 		}
-		time.Sleep(time.Minute * 5)
+		time.Sleep(time.Minute)
 	}
 }
 
-func (e *Engine) merge(shardId int64, files []CompactFiles) {
+type DumpOptional struct {
+	Zip bool
+}
+
+func (e *Engine) merge(shardId int64, files []CompactFiles, op *DumpOptional) {
 	var c []chan *MergePoint
 	for _, i := range files {
 		pipeline := e.openIndexPipeline(i)
@@ -188,7 +228,7 @@ func (e *Engine) merge(shardId int64, files []CompactFiles) {
 	lastDid := -1
 	lastTimestamp := -1
 	target := make(chan *Point, 1000)
-	go e.dump(shardId, target)
+	go e.dump(shardId, target, op)
 	for i := range points {
 		if int(i.DeviceId) != lastDid || lastTimestamp != int(i.Timestamp) {
 			target <- &Point{

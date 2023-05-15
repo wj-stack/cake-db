@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"github.com/go-mmap/mmap"
 	"github.com/peterbourgon/diskv/v3"
+	"github.com/pierrec/lz4"
+	"io"
 	"math"
 	"os"
 	"strconv"
@@ -19,13 +21,18 @@ const ShardSize = int64(time.Hour * 7 * 24)
 type Engine struct {
 	points              chan *Point
 	shardGroup          sync.Map
-	mu                  sync.Mutex
+	mu                  sync.RWMutex
+	list                Skiplist[*Point, struct{}]
 	keyDiskv, dataDiskv *diskv.Diskv
 }
 
 const KeyPath = "/home/wyatt/code/tmp/data/key"
 const ValuePath = "/home/wyatt/code/tmp/data/value"
 const TmpPath = "/home/wyatt/code/tmp/data/tmp"
+
+//const KeyPath = "/data/cake-db/data/key"
+//const ValuePath = "/data/cake-db/data/value"
+//const TmpPath = "/data/cake-db//data/tmp"
 
 func GetValuePath(s string) string {
 	split := strings.Split(s, "_")
@@ -45,12 +52,12 @@ func New() *Engine {
 		return []string{"0" + s[:1]}
 	}
 
-	// Initialize a new diskv store, rooted at "my-data-dir", with a 1MB cache.
 	keyDiskv := diskv.New(diskv.Options{
 		BasePath:     KeyPath,
 		Transform:    flatTransform,
 		CacheSizeMax: 1024 * 1024,
 	})
+
 	dataDiskv := diskv.New(diskv.Options{
 		BasePath: ValuePath,
 		Transform: func(s string) []string {
@@ -59,9 +66,12 @@ func New() *Engine {
 		},
 		CacheSizeMax: 0,
 	})
+	os.MkdirAll(KeyPath, 0777)
+	os.MkdirAll(ValuePath, 0777)
+	os.MkdirAll(TmpPath, 0777)
 	return &Engine{
 		points:    make(chan *Point, 1e6),
-		mu:        sync.Mutex{},
+		list:      NewSkipListMap[*Point, struct{}](&DataCompare{}),
 		keyDiskv:  keyDiskv,
 		dataDiskv: dataDiskv,
 	}
@@ -72,7 +82,7 @@ var once = sync.Once{}
 func (e *Engine) Init() {
 	once.Do(func() {
 		go e.handleShardGroup()
-		go e.compact()
+		//go e.compact()
 	})
 }
 
@@ -94,24 +104,48 @@ func (e *Engine) Write(key Data, point *Point) error {
 }
 
 func (e *Engine) handleShardGroup() {
+	size := 0
 	for point := range e.points {
-		// write value
-		shardId := point.Timestamp / ShardSize
-
-		// 		shardGroup: make(map[int64]chan *Point, 1e6),
-		shard, ok := e.shardGroup.LoadOrStore(shardId, make(chan *Point, 1e6))
-		if !ok {
-			go e.handleShard(shardId, shard.(chan *Point))
-		}
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Println("chan had closed!")
-					e.points <- point
+		e.mu.Lock()
+		e.list.Insert(point, struct{}{})
+		e.mu.Unlock()
+		size += len(point.Data)*8 + 16
+		if size > 100*1e6 {
+			size = 0
+			go func(list Skiplist[*Point, struct{}]) {
+				c := map[int64]chan *Point{}
+				iterator, err := list.Iterator()
+				if err != nil {
+					panic(err)
 				}
-			}()
-			shard.(chan *Point) <- point
-		}()
+				wg := sync.WaitGroup{}
+				for {
+					k, _, err := iterator.Next()
+					if err != nil {
+						break
+					}
+					shardId := k.Timestamp / ShardSize
+					_, ok := c[shardId]
+					if !ok {
+						c[shardId] = make(chan *Point, 1e6)
+						wg.Add(1)
+						go func() {
+							e.dump(shardId, c[shardId], nil)
+							wg.Done()
+						}()
+					}
+					c[shardId] <- k
+				}
+				for _, c := range c {
+					close(c)
+				}
+				wg.Wait()
+			}(e.list)
+			// clear
+			e.mu.Lock()
+			e.list = NewSkipListMap[*Point, struct{}](&DataCompare{})
+			e.mu.Unlock()
+		}
 	}
 }
 
@@ -143,59 +177,111 @@ Exit:
 	fmt.Println(shardId, "over")
 }
 
-func (e *Engine) dump(shardId int64, points chan *Point) {
+func getWriter(op *DumpOptional) (io.Writer, *bytes.Buffer) {
+	var writer io.Writer
+	buffer := bytes.NewBuffer([]byte{})
+	if op != nil && op.Zip {
+		writer = lz4.NewWriter(buffer)
+	} else {
+		writer = buffer
+	}
+	return writer, buffer
+}
+
+func (e *Engine) dump(shardId int64, points chan *Point, op *DumpOptional) {
 	file, err := os.CreateTemp(TmpPath, fmt.Sprintf("%d-%d-", shardId, time.Now().Unix()))
 	if err != nil {
 		panic(err)
 	}
 	defer func() {
 		file.Close()
-		err := e.dataDiskv.Import(file.Name(), fmt.Sprintf("%d_%d_%d", ShardSize, shardId, time.Now().UnixMilli()), true)
+		name := fmt.Sprintf("%d_%d_%d", ShardSize, shardId, time.Now().UnixMilli())
+		err := e.dataDiskv.Import(file.Name(), name, true)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Println("import ok...")
+		fmt.Println("import ok...", name)
 	}()
 	lastDid := -1
 	start := int64(math.MaxInt64)
 	end := int64(math.MinInt64)
 	indexBuf := bytes.NewBuffer([]byte{})
 	var offset uint64
+	var writer io.Writer
+	var reader *bytes.Buffer
+	var n int64
+	var flag byte
+	if op != nil && op.Zip {
+		flag = 1
+	}
+	realSize := 0
 	for k := range points {
-		err = binary.Write(file, binary.BigEndian, k.Timestamp)
-		if err != nil {
-			panic(err)
-		}
-		err = binary.Write(file, binary.BigEndian, k.Data)
-		if err != nil {
-			panic(err)
-		}
-		if int(k.DeviceId) != lastDid && lastDid != -1 {
-			var index = Index{
-				DeviceId:  DeviceId(lastDid),
-				StartTime: start,
-				EndTime:   end,
-				Offset:    int64(offset),
+
+		if int(k.DeviceId) != lastDid {
+			if lastDid != -1 {
+				writer.(io.Closer).Close()
+				n, err = io.Copy(file, reader)
+				fmt.Println("n:", n)
+				if err != nil {
+					panic(err)
+				}
+				var index = Index{
+					DeviceId:  DeviceId(lastDid),
+					StartTime: start,
+					EndTime:   end,
+					Offset:    int64(offset),
+					Length:    int64(realSize),
+					Flag:      flag,
+				}
+				//fmt.Println("offset", int64(offset))
+				index.Write(indexBuf)
+				start = math.MaxInt64
+				end = math.MinInt64
+				offset += uint64(n)
 			}
-			index.Write(indexBuf)
-			start = math.MaxInt64
-			end = math.MinInt64
+			realSize = 0
+			writer, reader = getWriter(op)
 		}
-		offset += uint64(len(k.Data)*8) + 8
+
+		p := bytes.NewBuffer([]byte{})
+		err = binary.Write(p, binary.BigEndian, k.Timestamp)
+		if err != nil {
+			panic(err)
+		}
+		err = binary.Write(p, binary.BigEndian, k.Data)
+		if err != nil {
+			panic(err)
+		}
+
+		realSize += p.Len()
+		_, err := writer.Write(p.Bytes())
+		if err != nil {
+			panic(err)
+		}
+
 		if start > k.Timestamp {
 			start = k.Timestamp
 		}
 		if end < k.Timestamp {
 			end = k.Timestamp
 		}
+
 		lastDid = int(k.DeviceId)
 	}
+
 	if lastDid != -1 {
+		writer.(io.Closer).Close()
+		n, err = io.Copy(file, reader)
+		if err != nil {
+			panic(err)
+		}
 		var index = Index{
 			DeviceId:  DeviceId(lastDid),
 			StartTime: start,
 			EndTime:   end,
 			Offset:    int64(offset),
+			Length:    int64(realSize),
+			Flag:      flag,
 		}
 		index.Write(indexBuf)
 	}
@@ -217,7 +303,7 @@ func (e *Engine) Dump(shardId int64, list Skiplist[*Point, struct{}]) {
 		return
 	}
 	points := make(chan *Point, 1024)
-	go e.dump(shardId, points)
+	go e.dump(shardId, points, nil)
 	for {
 		k, _, err := iterator.Next()
 		if err != nil {
@@ -274,7 +360,7 @@ func (e *Engine) PrintAll(path string) []*Point {
 			binary.Read(r, binary.BigEndian, &value)
 			values = append(values, value)
 		}
-		fmt.Println(index.DeviceId, timestamp, values)
+		fmt.Println("did", index.DeviceId, "timestamp", timestamp, "value:", values, "len:", len(values))
 	}
 
 	return nil
