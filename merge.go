@@ -174,7 +174,7 @@ func (e *Engine) compact() {
 				continue
 			}
 			split := strings.Split(key, "_")
-			if stat.Size() < 1*1e9 {
+			if stat.Size() < 500*1e6 {
 				v[split[1]] = append(v[split[1]], CompactFiles{
 					Key:  key,
 					Path: path,
