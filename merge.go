@@ -19,10 +19,10 @@ type MergePoint struct {
 	Created int64
 }
 
-func (e *Engine) openIndexPipeline(files CompactFiles) chan *MergePoint {
+func (e *Engine) OpenIndexPipeline(files CompactFiles) chan *MergePoint {
 	indexChan := make(chan *MergePoint, 1000)
 
-	meta := strings.Split(files.key, "_")
+	meta := strings.Split(files.Key, "_")
 
 	created, err := strconv.Atoi(meta[2])
 	if err != nil {
@@ -30,7 +30,7 @@ func (e *Engine) openIndexPipeline(files CompactFiles) chan *MergePoint {
 	}
 	go func() {
 
-		file, err := mmap.Open(files.path)
+		file, err := mmap.Open(files.Path)
 		if err != nil {
 			panic(err)
 		}
@@ -54,10 +54,10 @@ func (e *Engine) openIndexPipeline(files CompactFiles) chan *MergePoint {
 				break
 			}
 			indexs = append(indexs, &index)
-			fmt.Println(index)
+			// fmt.Println(index)
 		}
 
-		fmt.Println("indexs:", len(indexs))
+		//fmt.Println("indexs:", len(indexs))
 
 		dataSize := int64(file.Len()) - 8 - indexLength
 		for i := 0; i < len(indexs); i++ {
@@ -69,20 +69,21 @@ func (e *Engine) openIndexPipeline(files CompactFiles) chan *MergePoint {
 
 			index := indexs[i]
 
-			// read key
-			//keyBuffer, err := e.keyDiskv.Read(strconv.Itoa(int(index.DeviceId)))
-			//if err != nil {
-			//	panic(err)
-			//}
-			fmt.Println("l", l, "r", r)
+			// read Key
+			keyBuffer, err := e.keyDiskv.Read(strconv.Itoa(int(index.DeviceId)))
+			if err != nil {
+				panic(err)
+			}
+			//fmt.Println("l", l, "r", r)
 
-			valueCount := 10
+			valueCount := len(keyBuffer) / 8
 			pointSize := int64(8 + valueCount*8)
 
 			buf := make([]byte, r-l)
 			file.ReadAt(buf, index.Offset)
 			if index.Flag&1 > 0 {
-				target := make([]byte, index.Length+10)
+				//fmt.Println("unzip:", index, "len:", index.Length, "zip length:", r-l, files.Key, buf)
+				target := make([]byte, index.Length)
 				_, err := lz4.NewReader(bytes.NewReader(buf)).Read(target)
 				if err != nil {
 					panic(err)
@@ -109,7 +110,7 @@ func (e *Engine) openIndexPipeline(files CompactFiles) chan *MergePoint {
 					},
 					Created: int64(created),
 				}
-				fmt.Println(v.DeviceId, v.Timestamp, v.Data)
+				//fmt.Println(v.DeviceId, v.Timestamp, v.Data)
 				indexChan <- v
 			}
 
@@ -157,9 +158,9 @@ func MergeN(inputs ...chan *MergePoint) chan *MergePoint {
 }
 
 type CompactFiles struct {
-	key  string
-	path string
-	size int64
+	Key  string
+	Path string
+	Size int64
 }
 
 func (e *Engine) compact() {
@@ -175,16 +176,16 @@ func (e *Engine) compact() {
 			split := strings.Split(key, "_")
 			if stat.Size() < 1*1e9 {
 				v[split[1]] = append(v[split[1]], CompactFiles{
-					key:  key,
-					path: path,
-					size: stat.Size(),
+					Key:  key,
+					Path: path,
+					Size: stat.Size(),
 				})
 			}
 		}
 
 		for shardId, files := range v {
 			sort.Slice(files, func(i, j int) bool {
-				return files[i].size < files[j].size
+				return files[i].Size < files[j].Size
 			})
 			if len(files) <= 5 {
 				continue
@@ -192,7 +193,7 @@ func (e *Engine) compact() {
 
 			size := int64(0)
 			for _, i := range files {
-				size += i.size
+				size += i.Size
 			}
 
 			atoi, err := strconv.Atoi(shardId)
@@ -221,7 +222,7 @@ type DumpOptional struct {
 func (e *Engine) merge(shardId int64, files []CompactFiles, op *DumpOptional) {
 	var c []chan *MergePoint
 	for _, i := range files {
-		pipeline := e.openIndexPipeline(i)
+		pipeline := e.OpenIndexPipeline(i)
 		c = append(c, pipeline)
 	}
 	points := MergeN(c...)
@@ -242,6 +243,6 @@ func (e *Engine) merge(shardId int64, files []CompactFiles, op *DumpOptional) {
 	}
 	close(target)
 	for _, i := range files {
-		e.dataDiskv.Erase(i.key)
+		e.dataDiskv.Erase(i.Key)
 	}
 }

@@ -17,7 +17,7 @@ type Comparator[T any] interface {
 // Done indicates an iterator has returned all items.
 // https://github.com/GoogleCloudPlatform/google-cloud-go/wiki/Iterator-Guidelines
 var Done = errors.New("no more items in iterator")
-var NotFound = errors.New("key was not found")
+var NotFound = errors.New("Key was not found")
 
 // Ordered represents the set of types for which the '<' and '>' operator work.
 type Ordered interface {
@@ -44,7 +44,7 @@ func (BytesComparator) Compare(a []byte, b []byte) int {
 }
 
 type IteratorI[K any, V any] interface {
-	// Next returns the next key, value in sequence
+	// Next returns the next Key, value in sequence
 	// returns Done as the error when the iterator is exhausted
 	Next() (K, V, error)
 }
@@ -82,25 +82,25 @@ type Skiplist[K any, V any] interface {
 
 	Delete(key K)
 
-	// Insert key/value into the list.
-	// REQUIRES: nothing that compares equal to key is currently in the list.
+	// Insert Key/value into the list.
+	// REQUIRES: nothing that compares equal to Key is currently in the list.
 	Insert(key K, value V)
 
-	// Contains returns true if an entry that compares equal to key is in the list.
+	// Contains returns true if an entry that compares equal to Key is in the list.
 	Contains(key K) bool
 
-	// Get returns the value element that compares equal to the key supplied or returns NotFound if it does not exist.
+	// Get returns the value element that compares equal to the Key supplied or returns NotFound if it does not exist.
 	Get(key K) (V, error)
 
 	// Iterator returns an iterator over the whole sorted sequence
 	Iterator() (IteratorI[K, V], error)
 
-	// IteratorStartingAt returns an iterator over the sorted sequence starting at the given key (inclusive if key is in the list).
-	// Using a key that is out of the sequence range will result in either an empty iterator or the full sequence.
+	// IteratorStartingAt returns an iterator over the sorted sequence starting at the given Key (inclusive if Key is in the list).
+	// Using a Key that is out of the sequence range will result in either an empty iterator or the full sequence.
 	IteratorStartingAt(key K) (IteratorI[K, V], error)
 
-	// IteratorBetween Returns an iterator over the sorted sequence starting at the given keyLower (inclusive if key is in the list)
-	// and until the given keyHigher was reached (inclusive if key is in the list).
+	// IteratorBetween Returns an iterator over the sorted sequence starting at the given keyLower (inclusive if Key is in the list)
+	// and until the given keyHigher was reached (inclusive if Key is in the list).
 	// Using keys that are out of the sequence range will result in either an empty iterator or the full sequence.
 	// If keyHigher is lower than keyLower an error will be returned
 	IteratorBetween(keyLower K, keyHigher K) (IteratorI[K, V], error)
@@ -243,7 +243,7 @@ func findGreaterOrEqual[K any, V any](list *Map[K, V], key K, prevTable []*Node[
 	level := list.maxHeight - 1
 	for {
 		next := x.Next(level)
-		// check if this key is after the next node
+		// check if this Key is after the next node
 		if next != nil && list.comp.Compare(key, next.key) > 0 {
 			// keep searching in this list
 			x = next

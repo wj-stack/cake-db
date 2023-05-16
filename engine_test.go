@@ -223,10 +223,10 @@ func TestRead(t *testing.T) {
 	engine := New()
 	engine.Init()
 
-	pipeline := engine.openIndexPipeline(CompactFiles{
-		key:  "604800000000000_-1_1684168368974",
-		path: "/home/wyatt/code/tmp/data/value/604800000000000/-1/604800000000000_-1_1684168368974",
-		size: 0,
+	pipeline := engine.OpenIndexPipeline(CompactFiles{
+		Key:  "604800000000000_-1_1684168368974",
+		Path: "/home/wyatt/code/tmp/data/value/604800000000000/-1/604800000000000_-1_1684168368974",
+		Size: 0,
 	})
 	for _ = range pipeline {
 	}

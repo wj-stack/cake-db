@@ -21,7 +21,7 @@ func main() {
 		Topic:  "delta-solar",
 		Part:   0,
 		Path:   0,
-		File:   0,
+		File:   20,
 		Off:    0,
 		Cnt:    0,
 	})
@@ -30,7 +30,7 @@ func main() {
 	for {
 		message, err := service.FetchMessage()
 		if err != nil {
-			continue
+			panic(err)
 		}
 		if len(message) == 0 {
 			continue
@@ -49,6 +49,9 @@ func main() {
 			for _, i := range analyze {
 				if i.MsgType == 80 {
 					m := i.Data.(analyzer.SolarMessage)
+					if m.GetSolarData() == nil {
+						continue
+					}
 					if len(m.GetSolarData().Regs) > 0 {
 						regs := m.GetSolarData().Regs
 						var key []int64

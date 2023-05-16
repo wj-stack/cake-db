@@ -26,13 +26,13 @@ type Engine struct {
 	keyDiskv, dataDiskv *diskv.Diskv
 }
 
-const KeyPath = "/home/wyatt/code/tmp/data/key"
-const ValuePath = "/home/wyatt/code/tmp/data/value"
-const TmpPath = "/home/wyatt/code/tmp/data/tmp"
+//const KeyPath = "/home/wyatt/code/tmp/data/Key"
+//const ValuePath = "/home/wyatt/code/tmp/data/value"
+//const TmpPath = "/home/wyatt/code/tmp/data/tmp"
 
-//const KeyPath = "/data/cake-db/data/key"
-//const ValuePath = "/data/cake-db/data/value"
-//const TmpPath = "/data/cake-db//data/tmp"
+const KeyPath = "/data/cake-db/data/Key"
+const ValuePath = "/data/cake-db/data/value"
+const TmpPath = "/data/cake-db//data/tmp"
 
 func GetValuePath(s string) string {
 	split := strings.Split(s, "_")
@@ -82,12 +82,12 @@ var once = sync.Once{}
 func (e *Engine) Init() {
 	once.Do(func() {
 		go e.handleShardGroup()
-		//go e.compact()
+		go e.compact()
 	})
 }
 
 func (e *Engine) Write(key Data, point *Point) error {
-	// write key
+	// write Key
 	did := strconv.Itoa(int(point.DeviceId))
 	if !e.keyDiskv.Has(did) {
 		buffer := bytes.NewBuffer([]byte{})
@@ -194,13 +194,23 @@ func (e *Engine) dump(shardId int64, points chan *Point, op *DumpOptional) {
 		panic(err)
 	}
 	defer func() {
+		if err := recover(); err != nil {
+			file.Close()
+			os.Remove(file.Name())
+			return
+		}
 		file.Close()
 		name := fmt.Sprintf("%d_%d_%d", ShardSize, shardId, time.Now().UnixMilli())
+
 		err := e.dataDiskv.Import(file.Name(), name, true)
 		if err != nil {
 			panic(err)
 		}
 		fmt.Println("import ok...", name)
+		if op != nil && op.Zip {
+			fmt.Println("zip ok ...", name)
+		}
+
 	}()
 	lastDid := -1
 	start := int64(math.MaxInt64)
@@ -219,9 +229,14 @@ func (e *Engine) dump(shardId int64, points chan *Point, op *DumpOptional) {
 
 		if int(k.DeviceId) != lastDid {
 			if lastDid != -1 {
-				writer.(io.Closer).Close()
+				closer, ok := writer.(io.Closer)
+				if ok {
+					closer.Close()
+				}
 				n, err = io.Copy(file, reader)
-				fmt.Println("n:", n)
+				//if op != nil && op.Zip {
+				//	fmt.Println("unzip", realSize, "zip:", n)
+				//}
 				if err != nil {
 					panic(err)
 				}
@@ -270,7 +285,10 @@ func (e *Engine) dump(shardId int64, points chan *Point, op *DumpOptional) {
 	}
 
 	if lastDid != -1 {
-		writer.(io.Closer).Close()
+		closer, ok := writer.(io.Closer)
+		if ok {
+			closer.Close()
+		}
 		n, err = io.Copy(file, reader)
 		if err != nil {
 			panic(err)
