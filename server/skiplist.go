@@ -1,4 +1,4 @@
-package cakedb
+package server
 
 import (
 	"bytes"

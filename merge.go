@@ -1,4 +1,4 @@
-package cake_db
+package cakedb
 
 import (
 	"bufio"
@@ -54,7 +54,7 @@ func (e *Engine) OpenIndexPipeline(files CompactFiles) chan *MergePoint {
 				break
 			}
 			indexs = append(indexs, &index)
-			// fmt.Println(index)
+			fmt.Println(index)
 		}
 
 		//fmt.Println("indexs:", len(indexs))

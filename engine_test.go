@@ -1,4 +1,4 @@
-package cake_db
+package cakedb
 
 import (
 	"bufio"
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/araddon/dateparse"
 	"github.com/dlclark/regexp2"
+	"github.com/spf13/afero"
 	"math/rand"
 	"os"
 	"strconv"
@@ -229,5 +230,18 @@ func TestRead(t *testing.T) {
 		Size: 0,
 	})
 	for _ = range pipeline {
+	}
+}
+
+func TestExist(t *testing.T) {
+	appFS := afero.NewMemMapFs()
+	// create test files and directories
+	appFS.MkdirAll("src/a", 0755)
+	afero.WriteFile(appFS, "src/a/b", []byte("file b"), 0644)
+	afero.WriteFile(appFS, "src/c", []byte("file c"), 0644)
+	name := "src/c"
+	_, err := appFS.Stat(name)
+	if os.IsNotExist(err) {
+		t.Errorf("file \"%s\" does not exist.\n", name)
 	}
 }

@@ -1,29 +1,19 @@
-package cakedb
+package server
 
 import (
 	"encoding/binary"
 	"io"
 )
 
-type Data []int64
-
-type Point struct {
-	Data
-	DeviceId
-	Timestamp int64
-}
-
-type DeviceId uint32
-
 const IndexSize = 4 + 8 + 8 + 8 + 8 + 1
 
 type Index struct {
-	DeviceId        // 4
-	StartTime int64 // 8
-	EndTime   int64 // 8
-	Offset    int64 // 8
-	Length    int64 // 8 如果压缩则是原始大小
-	Flag      byte  // 1
+	DeviceId  uint32 // 4
+	StartTime int64  // 8
+	EndTime   int64  // 8
+	Offset    int64  // 8
+	Length    int64  // 8  if it is compressed, it is the original size
+	Flag      byte   // 1
 }
 
 func (i *Index) Read(indexBuf io.Reader) error {
@@ -53,7 +43,7 @@ func (i *Index) Read(indexBuf io.Reader) error {
 	}
 	return nil
 }
-func (i Index) Write(indexBuf io.Writer) {
+func (i *Index) Write(indexBuf io.Writer) {
 	binary.Write(indexBuf, binary.BigEndian, i.DeviceId)
 	binary.Write(indexBuf, binary.BigEndian, i.StartTime)
 	binary.Write(indexBuf, binary.BigEndian, i.EndTime)

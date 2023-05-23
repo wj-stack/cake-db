@@ -1,4 +1,4 @@
-package cake_db
+package cakedb
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -338,6 +339,178 @@ func (e *Engine) Dump(shardId int64, list Skiplist[*Point, struct{}]) {
 // [timestamp][value]... | [Index]... | [indexLength]
 
 // [Index] = [device][start][end][offset][flag]
+
+func (e *Engine) Read(did DeviceId, start, end int64) (RetKey Data, value []Point, err error) {
+
+	keyBuf, err := e.keyDiskv.Read(strconv.Itoa(int(did)))
+	if err != nil {
+		return nil, nil, err
+	}
+	keyReader := bytes.NewReader(keyBuf)
+	RetKey = make(Data, len(keyBuf)/8)
+	err = binary.Read(keyReader, binary.BigEndian, RetKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	v := map[int64]*MergePoint{}
+	mu := sync.Mutex{}
+	startId := start / ShardSize
+	endId := end / ShardSize
+	keys := e.dataDiskv.Keys(nil)
+	wp := sync.WaitGroup{}
+	for key := range keys {
+		fmt.Println("RetKey:", key)
+		path := GetValuePath(key)
+		split := strings.Split(key, "_")
+		atoi, err := strconv.Atoi(split[1])
+		fmt.Println(atoi, startId, endId)
+		if err != nil {
+			return nil, nil, err
+		}
+		if atoi < int(startId) || atoi > int(endId) {
+			continue
+		}
+		fmt.Println("read:", key, "path:", path)
+		wp.Add(1)
+		go func() {
+			defer wp.Done()
+			stream, err := e.dataDiskv.ReadStream(key, true)
+			if err != nil {
+				return
+			}
+			defer stream.Close()
+			stat, err := os.Stat(path)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			points := e.read(CompactFiles{
+				Key:  key,
+				Path: path,
+				Size: stat.Size(),
+			}, RetKey, did, start, end)
+
+			for msg := range points {
+				mu.Lock()
+				if v[msg.Timestamp] == nil || v[msg.Timestamp].Created < msg.Created {
+					v[msg.Timestamp] = msg
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wp.Wait()
+
+	for _, i := range v {
+		value = append(value, Point{
+			Data:      i.Data,
+			DeviceId:  i.DeviceId,
+			Timestamp: i.Timestamp,
+		})
+	}
+	return RetKey, value, nil
+}
+
+func (e *Engine) read(files CompactFiles, key Data, did DeviceId, start, end int64) chan *MergePoint {
+	indexChan := make(chan *MergePoint, 1000)
+
+	meta := strings.Split(files.Key, "_")
+
+	created, err := strconv.Atoi(meta[2])
+	if err != nil {
+		return nil
+	}
+
+	go func() {
+		defer close(indexChan)
+		file, err := mmap.Open(files.Path)
+		if err != nil {
+			panic(err)
+		}
+
+		// read Index length
+		indexLengthBuf := make([]byte, 8)
+		file.ReadAt(indexLengthBuf, int64(file.Len())-8)
+		var indexLength int64
+		binary.Read(bytes.NewReader(indexLengthBuf), binary.BigEndian, &indexLength)
+
+		n := indexLength / IndexSize
+
+		fmt.Println("indexLength:", indexLength, "n:", n)
+
+		indexBuf := make([]byte, IndexSize)
+
+		index := Index{}
+		search := sort.Search(int(n), func(i int) bool {
+			_, err := file.ReadAt(indexBuf, int64(file.Len())-8-indexLength+int64(i*IndexSize))
+			if err != nil {
+				panic(err)
+			}
+			reader := bytes.NewReader(indexBuf)
+			index.Read(reader)
+			//fmt.Printf("index:%#v\n", index)
+			return index.DeviceId >= did
+		})
+
+		if index.DeviceId != did {
+			return
+		}
+
+		fmt.Printf("index:%#v\n", index)
+
+		l := index.Offset
+		r := int64(file.Len()) - 8 - indexLength
+		if int64(search) != n-1 {
+			nextIndex := Index{}
+			_, err := file.ReadAt(indexBuf, int64(file.Len())-8-indexLength+int64((search+1)*IndexSize))
+			if err != nil {
+				panic(err)
+			}
+			reader := bytes.NewReader(indexBuf)
+			nextIndex.Read(reader)
+			r = nextIndex.Offset
+		}
+
+		valueCount := len(key)
+		pointSize := int64(8 + valueCount*8)
+
+		buf := make([]byte, r-l)
+		file.ReadAt(buf, index.Offset)
+		if index.Flag&1 > 0 {
+			target := make([]byte, index.Length)
+			_, err := lz4.NewReader(bytes.NewReader(buf)).Read(target)
+			if err != nil {
+				panic(err)
+			}
+			buf = target
+		} else {
+			file.ReadAt(buf, index.Offset)
+		}
+
+		for i := 0; i < int(index.Length/pointSize); i++ {
+			r := bytes.NewReader(buf[i*int(pointSize) : (i+1)*int(pointSize)])
+			var timestamp, value int64
+			var values Data
+			binary.Read(r, binary.BigEndian, &timestamp)
+			for i := 0; i < valueCount; i++ {
+				binary.Read(r, binary.BigEndian, &value)
+				values = append(values, value)
+			}
+			v := &MergePoint{
+				Point: &Point{
+					Data:      values,
+					DeviceId:  index.DeviceId,
+					Timestamp: timestamp,
+				},
+				Created: int64(created),
+			}
+			//fmt.Println(v.DeviceId, v.Timestamp, v.Data)
+			indexChan <- v
+		}
+
+	}()
+	return indexChan
+}
 
 func (e *Engine) PrintAll(path string) []*Point {
 	file, err := mmap.Open(path)

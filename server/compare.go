@@ -1,4 +1,4 @@
-package cakedb
+package server
 
 //      // < 0 when a < b
 //      // == 0 when a == b
@@ -8,7 +8,7 @@ package cakedb
 type DataCompare struct {
 }
 
-func (c *DataCompare) Compare(a *Point, b *Point) int {
+func (c *DataCompare) Compare(a *Data, b *Data) int {
 
 	if a.DeviceId < b.DeviceId {
 		return -1
